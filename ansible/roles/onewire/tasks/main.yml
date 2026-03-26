@@ -1,0 +1,17 @@
+---
+- name: Check for Bookworm boot config path
+  stat:
+    path: /boot/firmware/config.txt
+  register: firmware_config
+
+- name: Set boot config path
+  set_fact:
+    boot_config: "{{ '/boot/firmware/config.txt' if firmware_config.stat.exists else '/boot/config.txt' }}"
+
+- name: Enable 1-Wire overlay (GPIO4)
+  lineinfile:
+    path: "{{ boot_config }}"
+    line: "dtoverlay=w1-gpio"
+    regexp: "^#?dtoverlay=w1-gpio"
+    state: present
+  notify: reboot if needed

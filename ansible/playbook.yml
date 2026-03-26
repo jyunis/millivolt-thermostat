@@ -1,0 +1,16 @@
+---
+- name: Configure thermostat Pi
+  hosts: thermostat
+  become: true
+
+  vars:
+    thermostat_dir: /opt/thermostat
+    thermostat_user: jyunis
+    thermostat_simulate: "0"
+
+  roles:
+    - common
+    - i2c
+    - onewire
+    - tailscale
+    - thermostat-app

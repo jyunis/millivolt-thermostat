@@ -1,0 +1,24 @@
+---
+- name: Check for Bookworm boot config path
+  stat:
+    path: /boot/firmware/config.txt
+  register: firmware_config
+
+- name: Set boot config path
+  set_fact:
+    boot_config: "{{ '/boot/firmware/config.txt' if firmware_config.stat.exists else '/boot/config.txt' }}"
+
+- name: Enable I2C in boot config
+  lineinfile:
+    path: "{{ boot_config }}"
+    line: "dtparam=i2c_arm=on"
+    regexp: "^#?dtparam=i2c_arm"
+    state: present
+  notify: reboot if needed
+
+- name: Ensure i2c-dev module loads on boot
+  lineinfile:
+    path: /etc/modules
+    line: i2c-dev
+    state: present
+  notify: reboot if needed

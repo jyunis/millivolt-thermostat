@@ -1,0 +1,79 @@
+---
+- name: Create thermostat directory
+  file:
+    path: "{{ thermostat_dir }}"
+    state: directory
+    owner: "{{ thermostat_user }}"
+    group: "{{ thermostat_user }}"
+    mode: "0755"
+
+- name: Create state directory
+  file:
+    path: /var/lib/thermostat
+    state: directory
+    owner: "{{ thermostat_user }}"
+    group: "{{ thermostat_user }}"
+    mode: "0755"
+
+- name: Copy thermostat source files
+  copy:
+    src: "{{ item }}"
+    dest: "{{ thermostat_dir }}/{{ item | basename }}"
+    owner: "{{ thermostat_user }}"
+    mode: "0644"
+  with_fileglob:
+    - "../../../../thermostat/*.py"
+  notify: reload and restart thermostat
+
+- name: Copy pyproject.toml and lockfile
+  copy:
+    src: "{{ item }}"
+    dest: "{{ thermostat_dir }}/{{ item | basename }}"
+    owner: "{{ thermostat_user }}"
+    mode: "0644"
+  loop:
+    - "../../../../thermostat/pyproject.toml"
+    - "../../../../thermostat/uv.lock"
+  notify: reload and restart thermostat
+
+- name: Check if venv exists
+  stat:
+    path: "{{ thermostat_dir }}/.venv"
+  register: venv_exists
+
+- name: Create venv with system site packages
+  command: >
+    /home/{{ thermostat_user }}/.local/bin/uv venv
+    --system-site-packages
+    {{ thermostat_dir }}/.venv
+  args:
+    chdir: "{{ thermostat_dir }}"
+  become_user: "{{ thermostat_user }}"
+  environment:
+    HOME: "/home/{{ thermostat_user }}"
+  when: not venv_exists.stat.exists
+
+- name: Install dependencies with uv
+  command: >
+    /home/{{ thermostat_user }}/.local/bin/uv sync
+    --frozen
+    --extra hardware
+  args:
+    chdir: "{{ thermostat_dir }}"
+  become_user: "{{ thermostat_user }}"
+  environment:
+    HOME: "/home/{{ thermostat_user }}"
+
+- name: Install systemd service
+  template:
+    src: thermostat.service.j2
+    dest: /etc/systemd/system/thermostat.service
+    mode: "0644"
+  notify: reload and restart thermostat
+
+- name: Enable and start thermostat
+  systemd:
+    name: thermostat
+    enabled: true
+    state: started
+    daemon_reload: true

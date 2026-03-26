@@ -1,0 +1,16 @@
+[Unit]
+Description=millivolt thermostat controller
+After=network.target
+
+[Service]
+Type=simple
+User={{ thermostat_user }}
+SupplementaryGroups=gpio i2c
+WorkingDirectory={{ thermostat_dir }}
+Environment=THERMOSTAT_SIMULATE={{ thermostat_simulate }}
+ExecStart=/home/{{ thermostat_user }}/.local/bin/uv run python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

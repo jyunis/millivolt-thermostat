@@ -1,0 +1,6 @@
+---
+- name: reload and restart thermostat
+  systemd:
+    name: thermostat
+    daemon_reload: true
+    state: restarted
