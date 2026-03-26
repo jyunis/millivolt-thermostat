@@ -531,3 +531,57 @@ class TestCombinedScenarios:
         for temp in temps:
             t._control(temp)
             assert not t._fault
+
+
+# ── API-facing methods ────────────────────────────────────────────
+
+
+class TestAPIInterface:
+    def test_set_setpoint_from_api(self, t):
+        t.set_setpoint(72.0)
+        assert t.setpoint == 72.0
+
+    def test_set_setpoint_clamped_high(self, t):
+        t.set_setpoint(100.0)
+        assert t.setpoint == thermostat_main.SETPOINT_MAX
+
+    def test_set_setpoint_clamped_low(self, t):
+        t.set_setpoint(30.0)
+        assert t.setpoint == thermostat_main.SETPOINT_MIN
+
+    def test_set_setpoint_persists(self, t, tmp_state_file):
+        t.set_setpoint(71.0)
+        assert load_setpoint() == 71.0
+
+    def test_set_setpoint_triggers_oled(self, t):
+        """OLED updates immediately on API setpoint change (needs a current reading)."""
+        t._current_f = 67.0
+        t.set_setpoint(70.0)
+        # No assertion on OLED output (simulated), but no exception = good
+
+    def test_status_reflects_state(self, t):
+        t._current_f = 66.5
+        t._control(66.5)  # heat on
+        s = t.status()
+        assert s["current_f"] == 66.5
+        assert s["setpoint_f"] == 68.0
+        assert s["heating"] is True
+        assert s["fault"] is False
+
+    def test_status_no_reading_yet(self, t):
+        s = t.status()
+        assert s["current_f"] is None
+
+    def test_status_during_fault(self, t):
+        t._fault = True
+        s = t.status()
+        assert s["fault"] is True
+        assert s["heating"] is False
+
+    def test_clear_fault_via_api(self, t):
+        t._fault = True
+        t._consecutive_failures = 10
+        t.clear_fault()
+        s = t.status()
+        assert s["fault"] is False
+        assert t._consecutive_failures == 0

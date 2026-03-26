@@ -3,14 +3,20 @@
 
 Reads DS18B20 temperature sensor, drives relay for millivolt furnace,
 displays status on SH1106 OLED, and accepts setpoint changes via rotary encoder.
+
+Runs a FastAPI server for web UI and API access over Tailscale.
 """
 
+import asyncio
 import json
 import math
 import os
-import signal
-import sys
 import time
+from contextlib import asynccontextmanager
+
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from encoder import RotaryEncoder
 from oled import OledDisplay
@@ -23,12 +29,13 @@ LOOP_INTERVAL = float(os.getenv("LOOP_INTERVAL", "5.0"))
 SETPOINT_MIN = 50.0
 SETPOINT_MAX = 85.0
 STATE_FILE = os.getenv("STATE_FILE", "/var/lib/thermostat/state.json")
+PORT = int(os.getenv("PORT", "5000"))
 
 # Safety limits
-SENSOR_FAIL_LIMIT = int(os.getenv("SENSOR_FAIL_LIMIT", "6"))       # consecutive bad reads before relay kill
-TEMP_PLAUSIBLE_MIN = float(os.getenv("TEMP_PLAUSIBLE_MIN", "-20"))  # below this = sensor fault
-TEMP_PLAUSIBLE_MAX = float(os.getenv("TEMP_PLAUSIBLE_MAX", "120"))  # above this = sensor fault
-MAX_RUN_SECONDS = float(os.getenv("MAX_RUN_SECONDS", "10800"))      # 3 hours continuous max
+SENSOR_FAIL_LIMIT = int(os.getenv("SENSOR_FAIL_LIMIT", "6"))
+TEMP_PLAUSIBLE_MIN = float(os.getenv("TEMP_PLAUSIBLE_MIN", "-20"))
+TEMP_PLAUSIBLE_MAX = float(os.getenv("TEMP_PLAUSIBLE_MAX", "120"))
+MAX_RUN_SECONDS = float(os.getenv("MAX_RUN_SECONDS", "10800"))
 
 
 def load_setpoint() -> float:
@@ -65,32 +72,52 @@ class Thermostat:
         )
         self._running = True
         self._consecutive_failures = 0
-        self._relay_on_since = None  # timestamp when relay last turned on
-        self._fault = False          # latched fault state — relay locked off
+        self._relay_on_since = None
+        self._fault = False
+        self._current_f = None  # last good reading
+        self._loop = None       # asyncio event loop, set in run()
+        self._wake = None       # asyncio.Event, signals immediate cycle
+
+        # SSE subscribers — set of asyncio.Queue
+        self._subscribers: set[asyncio.Queue] = set()
 
     def _on_rotate(self, direction: int):
-        """Encoder twist: adjust setpoint by 1F."""
+        """Encoder twist: adjust setpoint by 1F. Wakes control loop immediately."""
         new = self.setpoint + direction
         self.setpoint = max(SETPOINT_MIN, min(SETPOINT_MAX, new))
         save_setpoint(self.setpoint)
+        # Immediate OLED feedback from the GPIO thread
+        if self._current_f is not None:
+            self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
+        self._wake_loop()
 
     def _on_press(self):
         """Encoder press: currently unused, reserved for future modes."""
         pass
 
+    def _wake_loop(self):
+        """Thread-safe wake of the async control loop."""
+        if self._loop and self._wake:
+            self._loop.call_soon_threadsafe(self._wake.set)
+
+    def set_setpoint(self, value: float):
+        """Set setpoint from API. Clamps to valid range."""
+        self.setpoint = max(SETPOINT_MIN, min(SETPOINT_MAX, value))
+        save_setpoint(self.setpoint)
+        if self._current_f is not None:
+            self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
+        self._wake_loop()
+
     def _is_plausible(self, temp_f: float) -> bool:
-        """Reject non-finite or out-of-range readings as sensor faults."""
         return math.isfinite(temp_f) and TEMP_PLAUSIBLE_MIN <= temp_f <= TEMP_PLAUSIBLE_MAX
 
     def _record_failure(self, reason: str):
-        """Track consecutive bad reads; trip fault after SENSOR_FAIL_LIMIT."""
         self._consecutive_failures += 1
         print(f"thermostat: bad read #{self._consecutive_failures}: {reason}", flush=True)
         if self._consecutive_failures >= SENSOR_FAIL_LIMIT:
             self._trip_fault(f"sensor failed {self._consecutive_failures} times in a row")
 
     def _trip_fault(self, reason: str):
-        """Latch into fault state — relay off, stays off until restart."""
         if not self._fault:
             self._fault = True
             self.relay.off()
@@ -98,24 +125,21 @@ class Thermostat:
             print(f"thermostat: FAULT — {reason}. Relay locked off.", flush=True)
 
     def clear_fault(self):
-        """Reset fault state (for testing or future remote reset)."""
         self._fault = False
         self._consecutive_failures = 0
+        self._wake_loop()
 
     def _control(self, current_f: float):
         """Hysteresis control with safety checks."""
         if self._fault:
             return
 
-        # Plausibility check
         if not self._is_plausible(current_f):
             self._record_failure(f"implausible reading: {current_f}")
             return
 
-        # Good read — reset failure counter
         self._consecutive_failures = 0
 
-        # Max run time check
         if self.relay.is_on and self._relay_on_since is not None:
             elapsed = time.monotonic() - self._relay_on_since
             if elapsed >= MAX_RUN_SECONDS:
@@ -124,7 +148,6 @@ class Thermostat:
                 )
                 return
 
-        # Hysteresis control
         if not self.relay.is_on and current_f < self.setpoint - HYSTERESIS:
             self.relay.on()
             self._relay_on_since = time.monotonic()
@@ -132,16 +155,46 @@ class Thermostat:
             self.relay.off()
             self._relay_on_since = None
 
-    def run(self):
+    def status(self) -> dict:
+        """Current state as a JSON-serializable dict."""
+        return {
+            "current_f": round(self._current_f, 1) if self._current_f is not None else None,
+            "setpoint_f": round(self.setpoint, 1),
+            "heating": self.relay.is_on,
+            "fault": self._fault,
+            "consecutive_failures": self._consecutive_failures,
+        }
+
+    def _notify_subscribers(self):
+        """Push current status to all SSE subscribers."""
+        data = json.dumps(self.status())
+        dead = set()
+        for q in self._subscribers:
+            try:
+                q.put_nowait(data)
+            except asyncio.QueueFull:
+                dead.add(q)
+        self._subscribers -= dead
+
+    async def run(self):
+        self._loop = asyncio.get_running_loop()
+        self._wake = asyncio.Event()
         print("thermostat: starting", flush=True)
         while self._running:
             try:
-                current_f = self.sensor.read_f()
+                current_f = await self._loop.run_in_executor(None, self.sensor.read_f)
+                self._current_f = current_f
                 self._control(current_f)
-                self.oled.render(current_f, self.setpoint, self.relay.is_on)
+                self.oled.render(current_f, self.setpoint, self.relay.is_on, self._fault)
             except Exception as e:
                 self._record_failure(f"exception: {e}")
-            time.sleep(LOOP_INTERVAL)
+            self._notify_subscribers()
+            # Sleep until interval OR until woken by setpoint change
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=LOOP_INTERVAL)
+            except asyncio.TimeoutError:
+                pass
 
     def shutdown(self):
         print("thermostat: shutting down", flush=True)
@@ -152,18 +205,220 @@ class Thermostat:
         self.encoder.cleanup()
 
 
-def main():
+# ── Singleton + FastAPI ───────────────────────────────────────────
+
+thermostat: Thermostat | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global thermostat
     thermostat = Thermostat()
+    task = asyncio.create_task(thermostat.run())
+    yield
+    thermostat.shutdown()
+    task.cancel()
 
-    def handle_signal(sig, frame):
-        thermostat.shutdown()
-        sys.exit(0)
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+app = FastAPI(lifespan=lifespan)
 
-    thermostat.run()
+
+@app.get("/status")
+async def get_status():
+    return JSONResponse(thermostat.status())
+
+
+@app.put("/setpoint")
+async def put_setpoint(value: float):
+    if not math.isfinite(value):
+        return JSONResponse({"error": "value must be finite"}, status_code=400)
+    if value < SETPOINT_MIN or value > SETPOINT_MAX:
+        return JSONResponse(
+            {"error": f"value must be between {SETPOINT_MIN} and {SETPOINT_MAX}"},
+            status_code=400,
+        )
+    thermostat.set_setpoint(value)
+    return JSONResponse(thermostat.status())
+
+
+@app.post("/clear-fault")
+async def post_clear_fault():
+    thermostat.clear_fault()
+    return JSONResponse(thermostat.status())
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"ok": not thermostat._fault})
+
+
+@app.get("/events")
+async def events():
+    """SSE stream — pushes status JSON on every control cycle and setpoint change."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=8)
+    thermostat._subscribers.add(q)
+
+    async def stream():
+        try:
+            # Send current state immediately on connect
+            yield f"data: {json.dumps(thermostat.status())}\n\n"
+            while True:
+                data = await q.get()
+                yield f"data: {data}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            thermostat._subscribers.discard(q)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
+@app.get("/", response_class=HTMLResponse)
+async def web_ui():
+    return WEB_UI_HTML
+
+
+WEB_UI_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Thermostat</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #111; color: #eee;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh; user-select: none;
+  }
+  .card {
+    background: #1a1a1a; border-radius: 20px; padding: 2rem;
+    width: 340px; text-align: center;
+  }
+  .current { font-size: 5rem; font-weight: 700; line-height: 1; }
+  .label { font-size: 0.85rem; color: #888; margin-top: 0.25rem; }
+  .setpoint-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 1rem; margin: 1.5rem 0;
+  }
+  .btn {
+    width: 56px; height: 56px; border-radius: 50%; border: 2px solid #444;
+    background: #222; color: #eee; font-size: 1.5rem; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.1s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { background: #333; }
+  .setpoint-val { font-size: 2.5rem; font-weight: 600; min-width: 5rem; }
+  .status {
+    font-size: 1.1rem; font-weight: 600; padding: 0.5rem 1rem;
+    border-radius: 8px; display: inline-block; margin-top: 0.5rem;
+  }
+  .heating { background: #b33a00; color: #fff; }
+  .idle { background: #333; color: #aaa; }
+  .fault {
+    background: #8b0000; color: #fff; margin-top: 1rem;
+    padding: 0.75rem 1rem; border-radius: 8px; cursor: pointer;
+  }
+  .fault:hover { background: #a00; }
+  .hidden { display: none; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; }
+  .dot-on { background: #f60; }
+  .dot-off { background: #555; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="current" id="temp">--</div>
+  <div class="label">current temperature</div>
+  <div class="setpoint-row">
+    <button class="btn" id="down" aria-label="decrease">&minus;</button>
+    <div class="setpoint-val" id="setpoint">--</div>
+    <button class="btn" id="up" aria-label="increase">+</button>
+  </div>
+  <div class="label">set temperature</div>
+  <div style="margin-top:1rem">
+    <div class="status idle" id="status">--</div>
+  </div>
+  <div class="fault hidden" id="fault" role="button" tabindex="0">
+    FAULT — tap to clear
+  </div>
+</div>
+<script>
+const $temp = document.getElementById('temp');
+const $set  = document.getElementById('setpoint');
+const $stat = document.getElementById('status');
+const $fault = document.getElementById('fault');
+
+function update(s) {
+  $temp.textContent = s.current_f != null ? s.current_f + '\u00b0' : '--';
+  $set.textContent = s.setpoint_f + '\u00b0';
+  if (s.fault) {
+    $stat.textContent = 'FAULT';
+    $stat.className = 'status fault';
+  } else if (s.heating) {
+    $stat.innerHTML = '<span class="dot dot-on"></span>HEATING';
+    $stat.className = 'status heating';
+  } else {
+    $stat.innerHTML = '<span class="dot dot-off"></span>IDLE';
+    $stat.className = 'status idle';
+  }
+  $fault.classList.toggle('hidden', !s.fault);
+}
+
+// SSE for live updates
+let es;
+function connect() {
+  es = new EventSource('/events');
+  es.onmessage = e => update(JSON.parse(e.data));
+  es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+}
+connect();
+
+async function setTemp(delta) {
+  const cur = parseFloat($set.textContent);
+  if (isNaN(cur)) return;
+  const r = await fetch('/setpoint?value=' + (cur + delta), { method: 'PUT' });
+  if (r.ok) update(await r.json());
+}
+
+document.getElementById('up').addEventListener('click', () => setTemp(1));
+document.getElementById('down').addEventListener('click', () => setTemp(-1));
+
+// Long-press for fast adjust
+let holdTimer;
+function startHold(delta) {
+  setTemp(delta);
+  let delay = 400;
+  function repeat() {
+    holdTimer = setTimeout(() => { setTemp(delta); delay = Math.max(100, delay - 50); repeat(); }, delay);
+  }
+  repeat();
+}
+function stopHold() { clearTimeout(holdTimer); }
+for (const [id, d] of [['up', 1], ['down', -1]]) {
+  const el = document.getElementById(id);
+  el.addEventListener('pointerdown', e => { e.preventDefault(); startHold(d); });
+  el.addEventListener('pointerup', stopHold);
+  el.addEventListener('pointerleave', stopHold);
+  el.addEventListener('pointercancel', stopHold);
+}
+
+$fault.addEventListener('click', async () => {
+  const r = await fetch('/clear-fault', { method: 'POST' });
+  if (r.ok) update(await r.json());
+});
+</script>
+</body>
+</html>
+"""
 
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

@@ -42,8 +42,8 @@ class OledDisplay:
             serial = i2c(port=1, address=0x3C)
             self._device = sh1106(serial)
 
-    def render(self, current_f: float, setpoint_f: float, heating: bool):
-        """Draw the thermostat screen: current temp, setpoint, and heat status."""
+    def render(self, current_f: float, setpoint_f: float, heating: bool, fault: bool = False):
+        """Draw the thermostat screen: current temp, setpoint, and heat/fault status."""
         img = Image.new("1", (WIDTH, HEIGHT), 0)
         draw = ImageDraw.Draw(img)
 
@@ -59,8 +59,13 @@ class OledDisplay:
         # Divider line
         draw.line([(0, 38), (WIDTH, 38)], fill=1)
 
-        # Heat status — bottom center
-        status = "HEAT ON" if heating else "HEAT OFF"
+        # Heat/fault status — bottom center
+        if fault:
+            status = "!! FAULT !!"
+        elif heating:
+            status = "HEAT ON"
+        else:
+            status = "HEAT OFF"
         bbox = draw.textbbox((0, 0), status, font=FONT_MED)
         text_w = bbox[2] - bbox[0]
         x = (WIDTH - text_w) // 2
