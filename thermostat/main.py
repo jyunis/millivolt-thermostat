@@ -13,6 +13,7 @@ import math
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, time as dtime
 
 import uvicorn
 from fastapi import FastAPI
@@ -36,6 +37,8 @@ SENSOR_FAIL_LIMIT = int(os.getenv("SENSOR_FAIL_LIMIT", "6"))
 TEMP_PLAUSIBLE_MIN = float(os.getenv("TEMP_PLAUSIBLE_MIN", "-20"))
 TEMP_PLAUSIBLE_MAX = float(os.getenv("TEMP_PLAUSIBLE_MAX", "120"))
 MAX_RUN_SECONDS = float(os.getenv("MAX_RUN_SECONDS", "10800"))
+FAILSAFE_HOUR = int(os.getenv("FAILSAFE_HOUR", "18"))           # 6 PM local
+FAILSAFE_SETPOINT = float(os.getenv("FAILSAFE_SETPOINT", "45"))
 
 
 def load_setpoint() -> float:
@@ -77,6 +80,8 @@ class Thermostat:
         self._current_f = None  # last good reading
         self._loop = None       # asyncio event loop, set in run()
         self._wake = None       # asyncio.Event, signals immediate cycle
+        self._last_interaction = None  # timestamp of last API/encoder setpoint change
+        self._failsafe_active = False  # true when nightly setback is in effect
 
         # SSE subscribers — set of asyncio.Queue
         self._subscribers: set[asyncio.Queue] = set()
@@ -86,6 +91,8 @@ class Thermostat:
         new = self.setpoint + direction
         self.setpoint = max(SETPOINT_MIN, min(SETPOINT_MAX, new))
         save_setpoint(self.setpoint)
+        self._last_interaction = datetime.now()
+        self._failsafe_active = False
         # Immediate OLED feedback from the GPIO thread
         if self._current_f is not None:
             self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
@@ -104,6 +111,8 @@ class Thermostat:
         """Set setpoint from API. Clamps to valid range."""
         self.setpoint = max(SETPOINT_MIN, min(SETPOINT_MAX, value))
         save_setpoint(self.setpoint)
+        self._last_interaction = datetime.now()
+        self._failsafe_active = False
         if self._current_f is not None:
             self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
         self._wake_loop()
@@ -129,10 +138,29 @@ class Thermostat:
         self._consecutive_failures = 0
         self._wake_loop()
 
+    def _check_failsafe(self):
+        """Nightly setback: if past FAILSAFE_HOUR and no interaction since
+        today's cutoff, force setpoint to FAILSAFE_SETPOINT. Any API call
+        or encoder twist resets this."""
+        now = datetime.now()
+        if now.hour < FAILSAFE_HOUR:
+            return
+        cutoff = now.replace(hour=FAILSAFE_HOUR, minute=0, second=0, microsecond=0)
+        if self._last_interaction is not None and self._last_interaction >= cutoff:
+            return
+        # Past cutoff with no recent interaction — apply setback
+        if not self._failsafe_active:
+            self._failsafe_active = True
+            self.setpoint = FAILSAFE_SETPOINT
+            save_setpoint(self.setpoint)
+            print(f"thermostat: nightly failsafe — setpoint forced to {FAILSAFE_SETPOINT}F", flush=True)
+
     def _control(self, current_f: float):
         """Hysteresis control with safety checks."""
         if self._fault:
             return
+
+        self._check_failsafe()
 
         if not self._is_plausible(current_f):
             self._record_failure(f"implausible reading: {current_f}")
@@ -162,6 +190,7 @@ class Thermostat:
             "setpoint_f": round(self.setpoint, 1),
             "heating": self.relay.is_on,
             "fault": self._fault,
+            "failsafe_active": self._failsafe_active,
             "consecutive_failures": self._consecutive_failures,
         }
 
@@ -326,6 +355,10 @@ WEB_UI_HTML = """\
     padding: 0.75rem 1rem; border-radius: 8px; cursor: pointer;
   }
   .fault:hover { background: #a00; }
+  .failsafe {
+    background: #444; color: #ccc; margin-top: 0.75rem;
+    padding: 0.4rem 0.75rem; border-radius: 6px; font-size: 0.8rem;
+  }
   .hidden { display: none; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle; }
@@ -346,6 +379,7 @@ WEB_UI_HTML = """\
   <div style="margin-top:1rem">
     <div class="status idle" id="status">--</div>
   </div>
+  <div class="failsafe hidden" id="failsafe">Nightly setback active</div>
   <div class="fault hidden" id="fault" role="button" tabindex="0">
     FAULT — tap to clear
   </div>
@@ -355,6 +389,7 @@ const $temp = document.getElementById('temp');
 const $set  = document.getElementById('setpoint');
 const $stat = document.getElementById('status');
 const $fault = document.getElementById('fault');
+const $fs = document.getElementById('failsafe');
 
 function update(s) {
   $temp.textContent = s.current_f != null ? s.current_f + '\u00b0' : '--';
@@ -370,6 +405,7 @@ function update(s) {
     $stat.className = 'status idle';
   }
   $fault.classList.toggle('hidden', !s.fault);
+  $fs.classList.toggle('hidden', !s.failsafe_active);
 }
 
 // SSE for live updates

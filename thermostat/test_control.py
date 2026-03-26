@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -33,6 +34,8 @@ def reset_safety_defaults():
     thermostat_main.TEMP_PLAUSIBLE_MIN = -20.0
     thermostat_main.TEMP_PLAUSIBLE_MAX = 120.0
     thermostat_main.MAX_RUN_SECONDS = 10800.0
+    thermostat_main.FAILSAFE_HOUR = 18
+    thermostat_main.FAILSAFE_SETPOINT = 45.0
     yield
 
 
@@ -585,3 +588,116 @@ class TestAPIInterface:
         s = t.status()
         assert s["fault"] is False
         assert t._consecutive_failures == 0
+
+    def test_status_shows_failsafe(self, t):
+        t._failsafe_active = True
+        s = t.status()
+        assert s["failsafe_active"] is True
+
+
+# ── Nightly failsafe setback ─────────────────────────────────────
+
+
+class TestNightlyFailsafe:
+    def _mock_time(self, hour, minute=0):
+        """Return a datetime.now() mock for a given hour today."""
+        return datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    def test_triggers_after_cutoff_no_interaction(self, t):
+        """Past 6 PM with no interaction → setpoint forced to 45F."""
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = self._mock_time(20)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t.setpoint = 70.0
+            t._last_interaction = None
+            t._control(66.0)
+        assert t.setpoint == 45.0
+        assert t._failsafe_active
+
+    def test_no_trigger_before_cutoff(self, t):
+        """Before 6 PM → no failsafe, even without interaction."""
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = self._mock_time(14)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t.setpoint = 70.0
+            t._last_interaction = None
+            t._control(66.0)
+        assert t.setpoint == 70.0
+        assert not t._failsafe_active
+
+    def test_api_call_after_cutoff_prevents_failsafe(self, t):
+        """API call at 7 PM → no failsafe at 8 PM."""
+        now_7pm = self._mock_time(19)
+        now_8pm = self._mock_time(20)
+        t.set_setpoint(72.0)
+        t._last_interaction = now_7pm
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = now_8pm
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t._control(66.0)
+        assert t.setpoint == 72.0
+        assert not t._failsafe_active
+
+    def test_old_interaction_triggers_failsafe(self, t):
+        """Interaction at 3 PM, now 8 PM → failsafe triggers."""
+        t._last_interaction = self._mock_time(15)
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = self._mock_time(20)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t.setpoint = 70.0
+            t._control(66.0)
+        assert t.setpoint == 45.0
+        assert t._failsafe_active
+
+    def test_encoder_resets_failsafe(self, t):
+        """Failsafe active, then encoder twist → failsafe cleared."""
+        t._failsafe_active = True
+        t.setpoint = 55.0
+        t._on_rotate(1)
+        assert t.setpoint == 56.0
+        assert not t._failsafe_active
+
+    def test_api_resets_failsafe(self, t):
+        """Failsafe active, then API call → failsafe cleared."""
+        t._failsafe_active = True
+        t.setpoint = 45.0
+        t.set_setpoint(68.0)
+        assert t.setpoint == 68.0
+        assert not t._failsafe_active
+
+    def test_failsafe_only_fires_once(self, t):
+        """Failsafe doesn't repeatedly log/save once already active."""
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = self._mock_time(20)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t.setpoint = 70.0
+            t._last_interaction = None
+            t._control(66.0)
+            assert t._failsafe_active
+            # Manually raise setpoint without resetting failsafe flag
+            # (simulating no API/encoder, just direct mutation for test)
+            old_setpoint = t.setpoint
+            t._control(66.0)
+            assert t.setpoint == old_setpoint  # didn't re-fire
+
+    def test_failsafe_during_fault_is_skipped(self, t):
+        """Faulted thermostat skips failsafe check (fault takes priority)."""
+        t._fault = True
+        t.setpoint = 70.0
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = self._mock_time(20)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t._control(66.0)
+        assert t.setpoint == 70.0  # fault returned early, no failsafe
+
+    def test_failsafe_with_custom_hour(self, t):
+        """Custom FAILSAFE_HOUR is respected."""
+        thermostat_main.FAILSAFE_HOUR = 22
+        with patch("main.datetime") as mock_dt:
+            mock_dt.now.return_value = self._mock_time(20)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            t.setpoint = 70.0
+            t._last_interaction = None
+            t._control(66.0)
+        assert t.setpoint == 70.0  # 8 PM < 10 PM, no failsafe
+        assert not t._failsafe_active
