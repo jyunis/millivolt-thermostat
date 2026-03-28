@@ -1,16 +1,39 @@
 ---
 - name: Configure thermostat Pi
-  hosts: thermostat
+  hosts: thermostat-studio
   become: true
 
   vars:
+    app_user: jyunis
+    thermostat_user: "{{ app_user }}"
     thermostat_dir: /opt/thermostat
-    thermostat_user: jyunis
     thermostat_simulate: "0"
+    app_extra_fonts:
+      - fonts-dejavu
+    scheduler_actions:
+      - name: set_temperature
+        endpoint: http://localhost:5000/api/temperature
+        method: POST
+      - name: set_mode
+        endpoint: http://localhost:5000/api/mode
+        method: POST
+    scheduler_entries:
+      - id: morning-warmup
+        cron: "0 6 * * 1-5"
+        action: set_temperature
+        params: { setpoint: 68 }
+        description: "Warm up for weekday mornings"
+        enabled: false
+      - id: nighttime-setback
+        cron: "0 22 * * *"
+        action: set_temperature
+        params: { setpoint: 55 }
+        description: "Lower heat at bedtime"
+        enabled: false
 
   roles:
     - common
     - i2c
     - onewire
-    - tailscale
+    - scheduler
     - thermostat-app

@@ -8,7 +8,7 @@ User={{ thermostat_user }}
 SupplementaryGroups=gpio i2c
 WorkingDirectory={{ thermostat_dir }}
 Environment=THERMOSTAT_SIMULATE={{ thermostat_simulate }}
-ExecStart=/home/{{ thermostat_user }}/.local/bin/uv run python main.py
+ExecStart={{ thermostat_dir }}/.venv/bin/python main.py
 Restart=always
 RestartSec=5
 
