@@ -12,7 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 hardware = [
-    "RPi.GPIO>=0.7.1",
+    # lgpio provided by system package (python3-lgpio)
 ]
 
 [tool.uv]

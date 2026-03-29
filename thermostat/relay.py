@@ -6,7 +6,7 @@ SIMULATE = os.getenv("THERMOSTAT_SIMULATE", "0") == "1"
 
 if not SIMULATE:
     try:
-        import RPi.GPIO as GPIO
+        import lgpio
     except Exception:
         SIMULATE = True
 
@@ -17,9 +17,10 @@ class Relay:
     def __init__(self):
         self.simulate = SIMULATE
         self._on = False
+        self._h = None
         if not self.simulate:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(RELAY_PIN, GPIO.OUT, initial=GPIO.LOW)
+            self._h = lgpio.gpiochip_open(0)
+            lgpio.gpio_claim_output(self._h, RELAY_PIN, 0)
 
     @property
     def is_on(self) -> bool:
@@ -29,14 +30,16 @@ class Relay:
         if not self._on:
             self._on = True
             if not self.simulate:
-                GPIO.output(RELAY_PIN, GPIO.HIGH)
+                lgpio.gpio_write(self._h, RELAY_PIN, 1)
 
     def off(self):
         if self._on:
             self._on = False
             if not self.simulate:
-                GPIO.output(RELAY_PIN, GPIO.LOW)
+                lgpio.gpio_write(self._h, RELAY_PIN, 0)
 
     def cleanup(self):
-        if not self.simulate:
-            GPIO.cleanup(RELAY_PIN)
+        if not self.simulate and self._h is not None:
+            lgpio.gpio_write(self._h, RELAY_PIN, 0)
+            lgpio.gpiochip_close(self._h)
+            self._h = None

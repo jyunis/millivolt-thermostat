@@ -7,7 +7,7 @@ SIMULATE = os.getenv("THERMOSTAT_SIMULATE", "0") == "1"
 
 if not SIMULATE:
     try:
-        import RPi.GPIO as GPIO
+        import lgpio
     except Exception:
         SIMULATE = True
 
@@ -24,36 +24,45 @@ class RotaryEncoder:
         self._on_rotate = on_rotate  # callback(direction: int)  +1 or -1
         self._on_press = on_press    # callback()
         self._lock = threading.Lock()
+        self._h = None
 
         if not self.simulate:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(CLK_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.setup(DT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.setup(SW_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            self._h = lgpio.gpiochip_open(0)
 
-            self._last_clk = GPIO.input(CLK_PIN)
+            # CLK and SW use alert (includes input claim); DT is read-only
+            lgpio.gpio_claim_alert(self._h, CLK_PIN, lgpio.FALLING_EDGE, lgpio.SET_PULL_UP)
+            lgpio.gpio_claim_input(self._h, DT_PIN, lgpio.SET_PULL_UP)
+            lgpio.gpio_claim_alert(self._h, SW_PIN, lgpio.FALLING_EDGE, lgpio.SET_PULL_UP)
 
-            GPIO.add_event_detect(CLK_PIN, GPIO.FALLING,
-                                  callback=self._rotation_callback, bouncetime=50)
-            GPIO.add_event_detect(SW_PIN, GPIO.FALLING,
-                                  callback=self._button_callback, bouncetime=300)
+            lgpio.gpio_set_debounce_micros(self._h, CLK_PIN, 50_000)
+            lgpio.gpio_set_debounce_micros(self._h, SW_PIN, 300_000)
 
-    def _rotation_callback(self, channel):
+            self._last_clk = lgpio.gpio_read(self._h, CLK_PIN)
+
+            self._cb_clk = lgpio.callback(self._h, CLK_PIN,
+                                          lgpio.FALLING_EDGE,
+                                          self._rotation_callback)
+            self._cb_sw = lgpio.callback(self._h, SW_PIN,
+                                         lgpio.FALLING_EDGE,
+                                         self._button_callback)
+
+    def _rotation_callback(self, chip, gpio, level, timestamp):
         with self._lock:
-            clk = GPIO.input(CLK_PIN)
-            dt = GPIO.input(DT_PIN)
+            clk = lgpio.gpio_read(self._h, CLK_PIN)
+            dt = lgpio.gpio_read(self._h, DT_PIN)
             if clk != self._last_clk:
                 direction = 1 if dt != clk else -1
                 if self._on_rotate:
                     self._on_rotate(direction)
             self._last_clk = clk
 
-    def _button_callback(self, channel):
+    def _button_callback(self, chip, gpio, level, timestamp):
         if self._on_press:
             self._on_press()
 
     def cleanup(self):
-        if not self.simulate:
-            GPIO.remove_event_detect(CLK_PIN)
-            GPIO.remove_event_detect(SW_PIN)
-            GPIO.cleanup([CLK_PIN, DT_PIN, SW_PIN])
+        if not self.simulate and self._h is not None:
+            self._cb_clk.cancel()
+            self._cb_sw.cancel()
+            lgpio.gpiochip_close(self._h)
+            self._h = None

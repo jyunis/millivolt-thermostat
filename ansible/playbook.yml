@@ -32,8 +32,8 @@
         enabled: false
 
   roles:
-    - common
-    - i2c
-    - onewire
-    - scheduler
-    - thermostat-app
+    - { role: common, tags: [common, setup] }
+    - { role: i2c, tags: [i2c, setup] }
+    - { role: onewire, tags: [onewire, setup] }
+    - { role: scheduler, tags: [scheduler] }
+    - { role: thermostat-app, tags: [app, deploy] }

@@ -503,12 +503,6 @@ wheels = [
 ]
 
 [[package]]
-name = "rpi-gpio"
-version = "0.7.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c4/0f/10b524a12b3445af1c607c27b2f5ed122ef55756e29942900e5c950735f2/RPi.GPIO-0.7.1.tar.gz", hash = "sha256:cd61c4b03c37b62bba4a5acfea9862749c33c618e0295e7e90aa4713fb373b70", size = 29090, upload-time = "2022-02-06T15:15:06.022Z" }
-
-[[package]]
 name = "smbus2"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -542,11 +536,6 @@ dependencies = [
     { name = "w1thermsensor" },
 ]
 
-[package.optional-dependencies]
-hardware = [
-    { name = "rpi-gpio" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -557,7 +546,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "luma-oled", specifier = ">=3.13.0" },
     { name = "pillow", specifier = ">=11.1.0" },
-    { name = "rpi-gpio", marker = "extra == 'hardware'", specifier = ">=0.7.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "w1thermsensor", specifier = ">=2.3.0" },
 ]

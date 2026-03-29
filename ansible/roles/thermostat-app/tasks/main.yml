@@ -22,7 +22,7 @@
     owner: "{{ thermostat_user }}"
     mode: "0644"
   with_fileglob:
-    - "../../../../thermostat/*.py"
+    - "{{ playbook_dir }}/../thermostat/*.py"
   notify: reload and restart thermostat
 
 - name: Copy pyproject.toml and lockfile
@@ -32,8 +32,8 @@
     owner: "{{ thermostat_user }}"
     mode: "0644"
   loop:
-    - "../../../../thermostat/pyproject.toml"
-    - "../../../../thermostat/uv.lock"
+    - "{{ playbook_dir }}/../thermostat/pyproject.toml"
+    - "{{ playbook_dir }}/../thermostat/uv.lock"
   notify: reload and restart thermostat
 
 - name: Check if venv exists
