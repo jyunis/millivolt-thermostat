@@ -86,8 +86,12 @@ class Thermostat:
         # SSE subscribers — set of asyncio.Queue
         self._subscribers: set[asyncio.Queue] = set()
 
+        # Encoder settle: delay control loop wake until user stops twisting
+        self._settle_timer: threading.Timer | None = None
+        self._settle_delay = 2.0  # seconds
+
     def _on_rotate(self, direction: int):
-        """Encoder twist: adjust setpoint by 1F. Wakes control loop immediately."""
+        """Encoder twist: adjust setpoint by 1F. Wakes control loop after settling."""
         new = self.setpoint + direction
         self.setpoint = max(SETPOINT_MIN, min(SETPOINT_MAX, new))
         save_setpoint(self.setpoint)
@@ -96,7 +100,11 @@ class Thermostat:
         # Immediate OLED feedback from the GPIO thread
         if self._current_f is not None:
             self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
-        self._wake_loop()
+        # Reset settle timer — only wake control loop after user stops twisting
+        if self._settle_timer is not None:
+            self._settle_timer.cancel()
+        self._settle_timer = threading.Timer(self._settle_delay, self._wake_loop)
+        self._settle_timer.start()
 
     def _on_press(self):
         """Encoder press: currently unused, reserved for future modes."""
