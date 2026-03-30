@@ -3,7 +3,7 @@ Description=millivolt thermostat controller
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
 User={{ thermostat_user }}
 SupplementaryGroups=gpio i2c
 WorkingDirectory={{ thermostat_dir }}
@@ -11,6 +11,7 @@ Environment=THERMOSTAT_SIMULATE={{ thermostat_simulate }}
 ExecStart={{ thermostat_dir }}/.venv/bin/python main.py
 Restart=always
 RestartSec=5
+WatchdogSec=60
 
 [Install]
 WantedBy=multi-user.target

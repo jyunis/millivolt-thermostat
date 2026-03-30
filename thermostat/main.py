@@ -11,6 +11,7 @@ import asyncio
 import json
 import math
 import os
+import socket
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -32,6 +33,20 @@ SETPOINT_MIN = 45.0
 SETPOINT_MAX = 85.0
 STATE_FILE = os.getenv("STATE_FILE", "/var/lib/thermostat/state.json")
 PORT = int(os.getenv("PORT", "5000"))
+
+
+def sd_notify(msg: str):
+    """Send a notification to systemd (watchdog heartbeat, ready, etc.)."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        sock.connect(addr)
+        sock.sendall(msg.encode())
+    finally:
+        sock.close()
+
 
 # Safety limits
 SENSOR_FAIL_LIMIT = int(os.getenv("SENSOR_FAIL_LIMIT", "6"))
@@ -227,6 +242,7 @@ class Thermostat:
             except Exception as e:
                 self._record_failure(f"exception: {e}")
             self._notify_subscribers()
+            sd_notify("WATCHDOG=1")
             # Sleep until interval OR until woken by setpoint change
             self._wake.clear()
             try:
@@ -253,6 +269,7 @@ async def lifespan(app: FastAPI):
     global thermostat
     thermostat = Thermostat()
     task = asyncio.create_task(thermostat.run())
+    sd_notify("READY=1")
     yield
     thermostat.shutdown()
     task.cancel()
