@@ -9,12 +9,15 @@ Runs a FastAPI server for web UI and API access over Tailscale.
 
 import asyncio
 import json
+import logging
 import math
 import os
 import socket
 import threading
 import time
 from contextlib import asynccontextmanager
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 from datetime import datetime, time as dtime
 
 import uvicorn

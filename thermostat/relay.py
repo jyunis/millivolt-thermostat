@@ -1,6 +1,9 @@
 """Single-channel relay control on GPIO17. Active-low relay module."""
 
+import logging
 import os
+
+log = logging.getLogger("thermostat.relay")
 
 SIMULATE = os.getenv("THERMOSTAT_SIMULATE", "0") == "1"
 
@@ -29,12 +32,14 @@ class Relay:
     def on(self):
         if not self._on:
             self._on = True
+            log.info("HEAT ON")
             if not self.simulate:
                 lgpio.gpio_write(self._h, RELAY_PIN, 0)  # LOW = relay on
 
     def off(self):
         if self._on:
             self._on = False
+            log.info("HEAT OFF")
             if not self.simulate:
                 lgpio.gpio_write(self._h, RELAY_PIN, 1)  # HIGH = relay off
 
