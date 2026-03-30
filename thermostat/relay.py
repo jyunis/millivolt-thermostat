@@ -1,4 +1,4 @@
-"""Single-channel relay control on GPIO17."""
+"""Single-channel relay control on GPIO17. Active-low relay module."""
 
 import os
 
@@ -20,7 +20,7 @@ class Relay:
         self._h = None
         if not self.simulate:
             self._h = lgpio.gpiochip_open(0)
-            lgpio.gpio_claim_output(self._h, RELAY_PIN, 0)
+            lgpio.gpio_claim_output(self._h, RELAY_PIN, 1)  # HIGH = relay off
 
     @property
     def is_on(self) -> bool:
@@ -30,16 +30,16 @@ class Relay:
         if not self._on:
             self._on = True
             if not self.simulate:
-                lgpio.gpio_write(self._h, RELAY_PIN, 1)
+                lgpio.gpio_write(self._h, RELAY_PIN, 0)  # LOW = relay on
 
     def off(self):
         if self._on:
             self._on = False
             if not self.simulate:
-                lgpio.gpio_write(self._h, RELAY_PIN, 0)
+                lgpio.gpio_write(self._h, RELAY_PIN, 1)  # HIGH = relay off
 
     def cleanup(self):
         if not self.simulate and self._h is not None:
-            lgpio.gpio_write(self._h, RELAY_PIN, 0)
+            lgpio.gpio_write(self._h, RELAY_PIN, 1)  # ensure off on shutdown
             lgpio.gpiochip_close(self._h)
             self._h = None
