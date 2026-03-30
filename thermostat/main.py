@@ -31,7 +31,7 @@ DEFAULT_SETPOINT = float(os.getenv("DEFAULT_SETPOINT", "68.0"))
 LOOP_INTERVAL = float(os.getenv("LOOP_INTERVAL", "5.0"))
 SETPOINT_MIN = 45.0
 SETPOINT_MAX = 85.0
-STATE_FILE = os.getenv("STATE_FILE", "/var/lib/thermostat/state.json")
+STATE_FILE = os.getenv("STATE_FILE", "/tmp/thermostat-state.json")
 PORT = int(os.getenv("PORT", "5000"))
 
 
