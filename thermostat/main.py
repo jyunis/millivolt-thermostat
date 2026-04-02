@@ -393,6 +393,12 @@ WEB_UI_HTML = """\
     margin-right: 6px; vertical-align: middle; }
   .dot-on { background: #f60; }
   .dot-off { background: #555; }
+  .shortcut-row { display: flex; justify-content: center; gap: 0.75rem; margin-top: 0.75rem; }
+  .shortcut-btn {
+    padding: 0.4rem 1.2rem; border-radius: 10px; border: 1px solid #444;
+    background: #2a2a2a; color: #aaa; font-size: 0.9rem; cursor: pointer;
+  }
+  .shortcut-btn:active { background: #444; }
 </style>
 </head>
 <body>
@@ -405,6 +411,10 @@ WEB_UI_HTML = """\
     <button class="btn" id="up" aria-label="increase">+</button>
   </div>
   <div class="label">set temperature</div>
+  <div class="shortcut-row">
+    <button class="shortcut-btn" onclick="setDirect(45)">45°</button>
+    <button class="shortcut-btn" onclick="setDirect(68)">68°</button>
+  </div>
   <div style="margin-top:1rem">
     <div class="status idle" id="status">--</div>
   </div>
@@ -455,6 +465,11 @@ async function setTemp(delta) {
 
 document.getElementById('up').addEventListener('click', () => setTemp(1));
 document.getElementById('down').addEventListener('click', () => setTemp(-1));
+
+async function setDirect(val) {
+  const r = await fetch('/setpoint?value=' + val, { method: 'PUT' });
+  if (r.ok) update(await r.json());
+}
 
 // Long-press for fast adjust
 let holdTimer;
