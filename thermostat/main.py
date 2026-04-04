@@ -207,6 +207,10 @@ class Thermostat:
                 )
                 return
 
+        # Don't switch relay while user is still adjusting setpoint
+        if self._settle_timer is not None and self._settle_timer.is_alive():
+            return
+
         if not self.relay.is_on and current_f < self.setpoint - HYSTERESIS:
             self.relay.on()
             self._relay_on_since = time.monotonic()

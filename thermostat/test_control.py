@@ -715,3 +715,162 @@ class TestNightlyFailsafe:
             t._control(66.0)
         assert t.setpoint == 70.0  # 8 PM < 10 PM, no failsafe
         assert not t._failsafe_active
+
+
+# ── Settle timer ─────────────────────────────────────────────────
+
+
+class TestSettleTimer:
+    def test_single_encoder_turn_starts_timer(self, t):
+        """A single encoder rotation should create a pending settle timer."""
+        assert t._settle_timer is None
+        t._on_rotate(1)
+        assert t._settle_timer is not None
+        assert t._settle_timer.is_alive()
+        t._settle_timer.cancel()
+
+    def test_single_api_call_starts_timer(self, t):
+        """An API setpoint change should create a pending settle timer."""
+        assert t._settle_timer is None
+        t.set_setpoint(72.0)
+        assert t._settle_timer is not None
+        assert t._settle_timer.is_alive()
+        t._settle_timer.cancel()
+
+    def test_rapid_encoder_turns_reset_timer(self, t):
+        """Each encoder turn should cancel the previous timer and start a new one."""
+        t._on_rotate(1)
+        first_timer = t._settle_timer
+        assert first_timer.is_alive()
+
+        t._on_rotate(1)
+        second_timer = t._settle_timer
+        # First timer should have been cancelled, second should be alive
+        assert not first_timer.is_alive()
+        assert second_timer is not first_timer
+        assert second_timer.is_alive()
+        second_timer.cancel()
+
+    def test_rapid_api_calls_reset_timer(self, t):
+        """Each API setpoint change should cancel the previous timer and start a new one."""
+        t.set_setpoint(70.0)
+        first_timer = t._settle_timer
+        assert first_timer.is_alive()
+
+        t.set_setpoint(71.0)
+        second_timer = t._settle_timer
+        assert not first_timer.is_alive()
+        assert second_timer is not first_timer
+        assert second_timer.is_alive()
+        second_timer.cancel()
+
+    def test_many_rapid_turns_only_last_timer_alive(self, t):
+        """Simulating fast knob twisting — only the final timer should be alive."""
+        timers = []
+        for _ in range(10):
+            t._on_rotate(1)
+            timers.append(t._settle_timer)
+
+        # All but the last should be cancelled
+        for timer in timers[:-1]:
+            assert not timer.is_alive(), "intermediate timer should have been cancelled"
+        assert timers[-1].is_alive(), "last timer should still be alive"
+        timers[-1].cancel()
+
+    def test_many_rapid_api_calls_only_last_timer_alive(self, t):
+        """Simulating rapid web UI button presses — only the final timer should be alive."""
+        timers = []
+        for val in range(68, 78):
+            t.set_setpoint(float(val))
+            timers.append(t._settle_timer)
+
+        for timer in timers[:-1]:
+            assert not timer.is_alive(), "intermediate timer should have been cancelled"
+        assert timers[-1].is_alive(), "last timer should still be alive"
+        timers[-1].cancel()
+
+    def test_settle_timer_fires_wake(self, t):
+        """After the settle delay, _wake_loop should be called."""
+        with patch.object(t, "_wake_loop") as mock_wake:
+            t._on_rotate(1)
+            # Wait for the timer to fire (settle_delay is 2s, but we can shorten it)
+            t._settle_timer.cancel()
+            t._settle_delay = 0.05
+            t._on_rotate(1)
+            t._settle_timer.join(timeout=1.0)
+            mock_wake.assert_called_once()
+
+    def test_cancelled_timer_does_not_fire_wake(self, t):
+        """A cancelled settle timer should NOT call _wake_loop."""
+        with patch.object(t, "_wake_loop") as mock_wake:
+            t._settle_delay = 0.05
+            t._on_rotate(1)
+            t._settle_timer.cancel()
+            time.sleep(0.15)  # well past the settle delay
+            mock_wake.assert_not_called()
+
+    def test_encoder_and_api_share_timer(self, t):
+        """An encoder turn followed by an API call should replace the timer."""
+        t._on_rotate(1)
+        encoder_timer = t._settle_timer
+
+        t.set_setpoint(72.0)
+        api_timer = t._settle_timer
+        # Timer object was replaced — old one was cancelled (won't fire)
+        assert api_timer is not encoder_timer
+        assert api_timer.is_alive()
+        # Verify the old timer's cancelled flag is set
+        assert encoder_timer.finished.is_set() or not encoder_timer.function
+        api_timer.cancel()
+
+    def test_relay_suppressed_during_settle(self, t):
+        """Regular control loop should NOT switch relay while settle timer is active."""
+        # Encoder turn starts settle timer
+        t._on_rotate(-1)  # setpoint 68 → 67
+        assert t._settle_timer.is_alive()
+        # Room temp is 66, below new setpoint-hysteresis (66) — would normally turn on
+        t._control(65.0)
+        assert not t.relay.is_on, "relay should not switch while settling"
+        t._settle_timer.cancel()
+
+    def test_relay_suppressed_off_switch_during_settle(self, t):
+        """Relay should not turn OFF during settle either."""
+        t.relay.on()
+        t._relay_on_since = time.monotonic()
+        # Raise setpoint down so current temp is above upper threshold
+        t._on_rotate(-1)  # 68 → 67, upper threshold = 68
+        assert t._settle_timer.is_alive()
+        t._control(69.0)  # above 68, would normally turn off
+        assert t.relay.is_on, "relay should stay on while settling"
+        t._settle_timer.cancel()
+
+    def test_relay_switches_after_settle_expires(self, t):
+        """Once settle timer expires, relay switching resumes normally."""
+        t._settle_delay = 0.05
+        t._on_rotate(-1)  # setpoint 68 → 67
+        t._settle_timer.join(timeout=1.0)
+        assert not t._settle_timer.is_alive()
+        t._control(65.0)  # below 66 threshold
+        assert t.relay.is_on, "relay should switch after settle expires"
+
+    def test_safety_checks_still_run_during_settle(self, t):
+        """Faults and plausibility checks must still work during settle."""
+        t.relay.on()
+        t._relay_on_since = time.monotonic()
+        t._on_rotate(1)
+        assert t._settle_timer.is_alive()
+        # Implausible reading should still count as failure
+        t._control(float("nan"))
+        assert t._consecutive_failures == 1
+        t._settle_timer.cancel()
+
+    def test_max_run_trips_during_settle(self, t):
+        """Max run time fault must still trip during settle — safety is never suppressed."""
+        t.relay.on()
+        t._relay_on_since = time.monotonic() - thermostat_main.MAX_RUN_SECONDS
+        t._on_rotate(1)
+        assert t._settle_timer.is_alive()
+        t._control(66.0)
+        assert t._fault, "max run time fault should still trip during settle"
+        assert not t.relay.is_on
+        t._settle_timer.cancel()
