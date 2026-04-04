@@ -120,10 +120,7 @@ class Thermostat:
         if self._current_f is not None:
             self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
         # Reset settle timer — only wake control loop after user stops twisting
-        if self._settle_timer is not None:
-            self._settle_timer.cancel()
-        self._settle_timer = threading.Timer(self._settle_delay, self._wake_loop)
-        self._settle_timer.start()
+        self._settle_and_wake()
 
     def _on_press(self):
         """Encoder press: currently unused, reserved for future modes."""
@@ -134,6 +131,13 @@ class Thermostat:
         if self._loop and self._wake:
             self._loop.call_soon_threadsafe(self._wake.set)
 
+    def _settle_and_wake(self):
+        """Reset the settle timer — control loop wakes after user stops adjusting."""
+        if self._settle_timer is not None:
+            self._settle_timer.cancel()
+        self._settle_timer = threading.Timer(self._settle_delay, self._wake_loop)
+        self._settle_timer.start()
+
     def set_setpoint(self, value: float):
         """Set setpoint from API. Clamps to valid range."""
         self.setpoint = max(SETPOINT_MIN, min(SETPOINT_MAX, value))
@@ -142,7 +146,7 @@ class Thermostat:
         self._failsafe_active = False
         if self._current_f is not None:
             self.oled.render(self._current_f, self.setpoint, self.relay.is_on, self._fault)
-        self._wake_loop()
+        self._settle_and_wake()
 
     def _is_plausible(self, temp_f: float) -> bool:
         return math.isfinite(temp_f) and TEMP_PLAUSIBLE_MIN <= temp_f <= TEMP_PLAUSIBLE_MAX

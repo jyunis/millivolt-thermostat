@@ -39,6 +39,20 @@ def reset_safety_defaults():
     yield
 
 
+# Pin datetime.now() to noon so the nightly failsafe never fires outside
+# of the TestNightlyFailsafe tests (which apply their own patches).
+_NOON = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+
+
+@pytest.fixture(autouse=True)
+def deterministic_time():
+    """Mock datetime.now() to noon so tests don't depend on wall-clock time."""
+    with patch("main.datetime") as mock_dt:
+        mock_dt.now.return_value = _NOON
+        mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+        yield mock_dt
+
+
 @pytest.fixture
 def t():
     """Create a thermostat in simulation mode with known defaults."""
