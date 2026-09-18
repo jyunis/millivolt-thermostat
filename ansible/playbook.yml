@@ -33,6 +33,7 @@
 
   roles:
     - { role: common, tags: [common, setup] }
+    - { role: wifi-resilience, tags: [wifi, setup] }
     - { role: i2c, tags: [i2c, setup] }
     - { role: onewire, tags: [onewire, setup] }
     - { role: scheduler, tags: [scheduler] }

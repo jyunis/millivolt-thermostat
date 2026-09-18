@@ -1,6 +1,6 @@
 all:
   hosts:
     thermostat-studio:
-      ansible_host: 192.168.1.51
+      ansible_host: 192.168.1.52  # DHCP lease as of 2026-09-17; .110 is now held by a MacBook
       ansible_user: jyunis
       ansible_ssh_private_key_file: ~/.ssh/id_ed25519
