@@ -4,6 +4,10 @@ A smart thermostat for a standing-pilot (millivolt) gas heater in my studio,
 built on a Raspberry Pi Zero 2 W. It has a physical knob and display, a web UI
 and REST API with live updates, and it's provisioned end to end with Ansible.
 
+Not pretty but it gets the job done:
+<img width="600" alt="Smart Thermostat for Millivolt Furnace" src="https://github.com/user-attachments/assets/3951803d-42bc-4284-b172-5bfd77ab05cb" />
+
+
 Millivolt heaters have no 24 V transformer, so off-the-shelf smart thermostats
 can't run on them. This one switches the heater's thermopile circuit with a
 relay and powers itself separately.
