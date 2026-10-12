@@ -1,0 +1,37 @@
+---
+# Keep a Pi's wifi from stranding the box: NetworkManager's default
+# 4 autoconnect retries end in a permanent "no-secrets" failure after a
+# flap (observed repeatedly on inkframe, Aug/Sep 2026), and brcmfmac power save drops
+# healthy associations. Plus a ping watchdog as a backstop.
+
+- name: Install NetworkManager wifi resilience drop-in
+  copy:
+    src: 90-wifi-resilience.conf
+    dest: /etc/NetworkManager/conf.d/90-wifi-resilience.conf
+    mode: "0644"
+  notify: restart NetworkManager
+
+- name: Install wifi-watchdog script
+  copy:
+    src: wifi-watchdog.sh
+    dest: /usr/local/sbin/wifi-watchdog.sh
+    mode: "0755"
+
+- name: Install wifi-watchdog service unit
+  copy:
+    src: wifi-watchdog.service
+    dest: /etc/systemd/system/wifi-watchdog.service
+    mode: "0644"
+
+- name: Install wifi-watchdog timer unit
+  copy:
+    src: wifi-watchdog.timer
+    dest: /etc/systemd/system/wifi-watchdog.timer
+    mode: "0644"
+
+- name: Enable and start wifi-watchdog timer
+  systemd:
+    name: wifi-watchdog.timer
+    enabled: true
+    state: started
+    daemon_reload: true

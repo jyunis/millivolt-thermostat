@@ -1,0 +1,17 @@
+[Unit]
+Description=Schedule runner
+After=network.target
+
+[Service]
+Type=simple
+User={{ app_user }}
+WorkingDirectory={{ scheduler_dir }}
+Environment=SCHEDULER_CONFIG=/etc/scheduler/config.yml
+Environment=SCHEDULER_DB={{ scheduler_db }}
+Environment=SCHEDULER_PORT={{ scheduler_port }}
+ExecStart={{ scheduler_dir }}/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

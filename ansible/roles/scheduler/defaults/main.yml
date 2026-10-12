@@ -1,0 +1,7 @@
+---
+app_user: jyunis
+scheduler_dir: /opt/scheduler
+scheduler_port: 8100
+scheduler_db: /var/lib/scheduler/schedules.db
+scheduler_actions: []
+scheduler_entries: []

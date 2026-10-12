@@ -1,0 +1,6 @@
+[Unit]
+Description=WiFi watchdog: reconnect wlan0 if gateway unreachable
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wifi-watchdog.sh

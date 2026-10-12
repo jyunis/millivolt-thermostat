@@ -1,0 +1,5 @@
+---
+app_user: jyunis
+app_extra_fonts:
+  - fonts-dejavu
+swap_size_mb: 1024

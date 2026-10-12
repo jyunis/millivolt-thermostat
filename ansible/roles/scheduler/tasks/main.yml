@@ -1,0 +1,71 @@
+---
+- name: Create scheduler directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: "0755"
+  loop:
+    - "{{ scheduler_dir }}"
+    - /var/lib/scheduler
+    - /etc/scheduler
+
+- name: Copy scheduler source
+  copy:
+    src: "{{ item }}"
+    dest: "{{ scheduler_dir }}/{{ item | basename }}"
+    owner: "{{ app_user }}"
+    mode: "0644"
+  loop:
+    - main.py
+    - pyproject.toml
+    - uv.lock
+  notify: reload and restart scheduler
+
+- name: Check if venv exists
+  stat:
+    path: "{{ scheduler_dir }}/.venv"
+  register: scheduler_venv_exists
+
+- name: Create venv
+  command: >
+    /home/{{ app_user }}/.local/bin/uv venv
+    {{ scheduler_dir }}/.venv
+  args:
+    chdir: "{{ scheduler_dir }}"
+  become_user: "{{ app_user }}"
+  environment:
+    HOME: "/home/{{ app_user }}"
+  when: not scheduler_venv_exists.stat.exists
+
+- name: Install dependencies with uv
+  command: >
+    /home/{{ app_user }}/.local/bin/uv sync --frozen
+  args:
+    chdir: "{{ scheduler_dir }}"
+  become_user: "{{ app_user }}"
+  environment:
+    HOME: "/home/{{ app_user }}"
+
+- name: Deploy scheduler config
+  template:
+    src: config.yml.j2
+    dest: /etc/scheduler/config.yml
+    owner: "{{ app_user }}"
+    mode: "0644"
+  notify: reload and restart scheduler
+
+- name: Install systemd service
+  template:
+    src: scheduler.service.j2
+    dest: /etc/systemd/system/scheduler.service
+    mode: "0644"
+  notify: reload and restart scheduler
+
+- name: Enable and start scheduler
+  systemd:
+    name: scheduler
+    enabled: true
+    state: started
+    daemon_reload: true

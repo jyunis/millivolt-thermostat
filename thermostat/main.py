@@ -4,7 +4,7 @@
 Reads DS18B20 temperature sensor, drives relay for millivolt furnace,
 displays status on SH1106 OLED, and accepts setpoint changes via rotary encoder.
 
-Runs a FastAPI server for web UI and API access over Tailscale.
+Runs a FastAPI server for web UI and API access over the LAN or Tailscale.
 """
 
 import asyncio

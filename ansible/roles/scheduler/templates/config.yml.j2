@@ -1,0 +1,23 @@
+---
+actions:
+{% for action in scheduler_actions %}
+  - name: {{ action.name }}
+    endpoint: {{ action.endpoint }}
+    method: {{ action.method | default('POST') }}
+{% endfor %}
+
+schedules:
+{% for entry in scheduler_entries %}
+  - id: {{ entry.id }}
+    cron: "{{ entry.cron }}"
+    action: {{ entry.action }}
+{% if entry.params is defined %}
+    params: {{ entry.params | to_json }}
+{% endif %}
+{% if entry.description is defined %}
+    description: "{{ entry.description }}"
+{% endif %}
+{% if entry.enabled is defined %}
+    enabled: {{ entry.enabled | lower }}
+{% endif %}
+{% endfor %}
